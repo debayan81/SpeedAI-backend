@@ -69,15 +69,21 @@ const openai = new OpenAI({
 // 5. Database Connection & Schema
 // ============================================================
 
-const sql = postgres(process.env.DATABASE_URL, {
+const dbUrl = process.env.DATABASE_URL;
+if (!dbUrl) {
+    process.stderr.write('❌ CRITICAL: DATABASE_URL is not set!\n');
+    process.exit(1);
+}
+// Log masked URL so we can verify it's correct on Render
+const masked = dbUrl.replace(/:([^@]{3})[^@]*@/, ':$1***@');
+process.stderr.write(`🔗 DATABASE_URL detected: ${masked}\n`);
+
+const sql = postgres(dbUrl, {
     ssl: 'require',
-    connect_timeout: 10,
+    connect_timeout: 30,
 });
 
 async function initDB() {
-    if (!process.env.DATABASE_URL) {
-        throw new Error('CRITICAL ERROR: DATABASE_URL environment variable is MISSING! Please add DATABASE_URL to your Render Environment Variables.');
-    }
 
     try {
         await sql`
