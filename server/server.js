@@ -78,12 +78,37 @@ if (!dbUrl) {
 const masked = dbUrl.replace(/:([^@]{3})[^@]*@/, ':$1***@');
 process.stderr.write(`🔗 DATABASE_URL detected: ${masked}\n`);
 
-const sql = postgres(dbUrl, {
+// Parse explicitly to avoid any URL parsing issues in the postgres library
+const parsedUrl = new URL(dbUrl);
+process.stderr.write(`🔗 Parsed host: ${parsedUrl.hostname}, port: ${parsedUrl.port || 5432}, db: ${parsedUrl.pathname.slice(1)}\n`);
+
+const sql = postgres({
+    host: parsedUrl.hostname,
+    port: parseInt(parsedUrl.port) || 5432,
+    database: parsedUrl.pathname.slice(1),
+    username: decodeURIComponent(parsedUrl.username),
+    password: decodeURIComponent(parsedUrl.password),
     ssl: 'require',
     connect_timeout: 30,
+    idle_timeout: 20,
+    max_lifetime: 60 * 30,
+    prepare: false,  // Required for Neon pooler (PgBouncer)
 });
 
 async function initDB() {
+    // Retry logic for Neon cold starts
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            await sql`SELECT 1`;
+            console.log(`✅ Database connected (attempt ${attempt})`);
+            break;
+        } catch (err) {
+            console.error(`⚠️ DB connection attempt ${attempt}/3 failed: ${err.message}`);
+            if (attempt === 3) throw new Error(`Could not connect to database after 3 attempts: ${err.message}`);
+            console.log('⏳ Retrying in 5 seconds...');
+            await new Promise(r => setTimeout(r, 5000));
+        }
+    }
 
     try {
         await sql`
