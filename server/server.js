@@ -76,9 +76,7 @@ const sql = postgres(process.env.DATABASE_URL, {
 
 async function initDB() {
     if (!process.env.DATABASE_URL) {
-        console.error('❌ CRITICAL ERROR: DATABASE_URL environment variable is MISSING!');
-        console.error('Please add DATABASE_URL to your Render Environment Variables.');
-        process.exit(1);
+        throw new Error('CRITICAL ERROR: DATABASE_URL environment variable is MISSING! Please add DATABASE_URL to your Render Environment Variables.');
     }
 
     try {
@@ -131,10 +129,7 @@ async function initDB() {
 
         console.log('✅ Database tables initialized successfully');
     } catch (error) {
-        console.error('❌ Failed to initialize database tables:');
-        console.error(error.message || error);
-        // Delay exit to allow Render to flush logs
-        setTimeout(() => process.exit(1), 1000);
+        throw new Error(`Failed to initialize database tables: ${error.message}`);
     }
 }
 
