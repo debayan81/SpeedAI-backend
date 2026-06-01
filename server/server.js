@@ -776,6 +776,10 @@ initDB().then(() => {
     console.log('✅ DB init complete, starting HTTP server...');
     app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server running on port ${PORT}`));
 }).catch(err => {
-    console.error('❌ Server failed to start:', err);
-    process.exit(1);
+    console.error('❌ Server failed to start:');
+    console.error(err);
+    // Give Render time to flush the logs before exiting
+    setTimeout(() => {
+        process.exit(1);
+    }, 2000);
 });
