@@ -1,10 +1,10 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { assets } from '../assets/assets'
 import { useClerk, useUser } from '@clerk/react'
 import { useAppUser } from '../context/UserContext'
 import {
-    Home, SquarePen, Hash, Image, Eraser, Scissors, FileText, LogOut, Users, Zap
+    Home, SquarePen, Hash, Image, Eraser, Scissors, FileText, LogOut, Users, Zap, Menu, X
 } from 'lucide-react'
 
 const sidebarLinks = [
@@ -23,18 +23,51 @@ const Layout = () => {
     const { signOut } = useClerk();
     const { user: clerkUser } = useUser();
     const { user: appUser, loading: appLoading } = useAppUser();
+    const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
     const planLabel = appLoading ? '...' : (appUser?.plan === 'free' ? 'Free Plan' : `${appUser?.plan || 'Free'} Plan`)
     const credits = appLoading ? '–' : (appUser?.credits ?? 0)
 
+    const closeSidebar = () => setIsSidebarOpen(false);
+
     return (
-        <div className='flex min-h-screen'>
+        <div className='flex min-h-screen bg-[#F7F8FA] flex-col md:flex-row relative'>
+            
+            {/* Mobile Header */}
+            <div className='md:hidden flex items-center justify-between bg-white px-5 py-4 border-b border-gray-100 z-40 sticky top-0'>
+                <img src={assets.logo} alt="SpeedAI" className='w-28 cursor-pointer' onClick={() => navigate('/')} />
+                <button 
+                    onClick={() => setIsSidebarOpen(true)}
+                    className='p-2 -mr-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors'
+                >
+                    <Menu className='w-6 h-6' />
+                </button>
+            </div>
+
+            {/* Mobile Overlay */}
+            {isSidebarOpen && (
+                <div 
+                    className='fixed inset-0 bg-black/40 z-40 md:hidden transition-opacity duration-300'
+                    onClick={closeSidebar}
+                />
+            )}
+
             {/* Sidebar */}
-            <aside className='w-60 flex-shrink-0 flex flex-col bg-white border-r border-gray-100'>
-                {/* Logo */}
-                <div className='px-5 py-4'>
-                    <img src={assets.logo} alt="SpeedAI" className='w-36 cursor-pointer'
-                        onClick={() => navigate('/')} />
+            <aside className={`
+                fixed inset-y-0 left-0 z-50 w-64 bg-white border-r border-gray-100 flex flex-col transform transition-transform duration-300 ease-in-out
+                md:relative md:translate-x-0 md:w-60 md:flex-shrink-0
+                ${isSidebarOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'}
+            `}>
+                {/* Mobile Close Button & Desktop Logo */}
+                <div className='flex items-center justify-between px-5 py-4 md:block'>
+                    <img src={assets.logo} alt="SpeedAI" className='w-36 cursor-pointer md:block hidden' onClick={() => navigate('/')} />
+                    <h2 className='font-bold text-slate-800 text-lg md:hidden'>Menu</h2>
+                    <button 
+                        onClick={closeSidebar}
+                        className='md:hidden p-2 -mr-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors'
+                    >
+                        <X className='w-5 h-5' />
+                    </button>
                 </div>
 
                 {/* User profile */}
@@ -55,12 +88,13 @@ const Layout = () => {
                 </div>
 
                 {/* Navigation links */}
-                <nav className='flex-1 px-3 space-y-1'>
+                <nav className='flex-1 px-3 space-y-1 overflow-y-auto'>
                     {sidebarLinks.map((link) => (
                         <NavLink
                             key={link.path}
                             to={link.path}
                             end={link.end}
+                            onClick={closeSidebar}
                             className={({ isActive }) =>
                                 `flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium 
                                 transition-all duration-200 ${isActive
@@ -91,7 +125,7 @@ const Layout = () => {
                         </div>
                         <button
                             onClick={() => signOut(() => navigate('/'))}
-                            className='text-gray-400 hover:text-gray-600 transition-colors cursor-pointer'
+                            className='text-gray-400 hover:text-gray-600 transition-colors cursor-pointer p-2'
                         >
                             <LogOut className='w-4 h-4' />
                         </button>
@@ -100,7 +134,7 @@ const Layout = () => {
             </aside>
 
             {/* Main content area */}
-            <main className='flex-1 bg-[#F7F8FA] p-6 overflow-y-auto'>
+            <main className='flex-1 p-4 sm:p-6 overflow-y-auto w-full'>
                 <Outlet />
             </main>
         </div>

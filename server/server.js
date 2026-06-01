@@ -69,7 +69,10 @@ const openai = new OpenAI({
 // 5. Database Connection & Schema
 // ============================================================
 
-const sql = postgres(process.env.DATABASE_URL);
+const sql = postgres(process.env.DATABASE_URL, {
+    ssl: 'require',
+    connect_timeout: 10,
+});
 
 async function initDB() {
     try {
@@ -133,7 +136,12 @@ async function initDB() {
 
 async function requireAuth(req, res, next) {
     try {
-        const { userId } = getAuth(req);
+        const authHeader = req.headers['authorization'];
+        const authState = getAuth(req);
+        const { userId } = authState;
+        
+        console.log(`🔐 requireAuth: path=${req.path}, hasAuthHeader=${!!authHeader}, userId=${userId || 'null'}`);
+        
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized. Please sign in.' });
         }
@@ -145,12 +153,14 @@ async function requireAuth(req, res, next) {
         `;
 
         if (!dbUser) {
+            console.log(`⚠️ requireAuth: Clerk userId ${userId} not found in DB`);
             return res.status(404).json({ error: 'User not found in database.' });
         }
 
         req.dbUser = dbUser;
         next();
     } catch (error) {
+        console.error('❌ requireAuth error:', error.message);
         next(error);
     }
 }
@@ -179,6 +189,30 @@ async function checkAndDeductCredit(dbUser, tool) {
 
     // Update the in-memory object so subsequent reads in the same request are accurate
     dbUser.credits -= 1;
+}
+
+// ============================================================
+// 7b. Helper: retryWithBackoff (handles Gemini 429 rate limits)
+// ============================================================
+
+async function retryWithBackoff(fn, { retries = 3, baseDelay = 2000 } = {}) {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            return await fn();
+        } catch (err) {
+            const isRateLimit = err.status === 429 ||
+                err.constructor?.name === 'RateLimitError' ||
+                (err.response?.status === 429);
+
+            if (isRateLimit && attempt < retries) {
+                const delay = baseDelay * Math.pow(2, attempt - 1);
+                console.log(`⏳ Rate limited (attempt ${attempt}/${retries}), retrying in ${delay / 1000}s...`);
+                await new Promise(r => setTimeout(r, delay));
+                continue;
+            }
+            throw err;
+        }
+    }
 }
 
 // ============================================================
@@ -301,16 +335,18 @@ app.post('/api/ai/article', requireAuth, async (req, res, next) => {
 
         await checkAndDeductCredit(req.dbUser, 'article');
 
-        const completion = await openai.chat.completions.create({
-            model: 'gemini-2.0-flash',
-            messages: [
-                { role: 'system', content: 'You are an expert article writer.' },
-                {
-                    role: 'user',
-                    content: `Write a detailed article about: ${topic}. Tone: ${selectedTone}`,
-                },
-            ],
-        });
+        const completion = await retryWithBackoff(() =>
+            openai.chat.completions.create({
+                model: 'gemini-2.5-flash',
+                messages: [
+                    { role: 'system', content: 'You are an expert article writer.' },
+                    {
+                        role: 'user',
+                        content: `Write a detailed article about: ${topic}. Tone: ${selectedTone}`,
+                    },
+                ],
+            })
+        );
 
         const article = completion.choices[0].message.content;
 
@@ -339,42 +375,11 @@ app.post('/api/ai/image', requireAuth, async (req, res, next) => {
 
         const fullPrompt = `Generate an image: ${prompt}, style: ${selectedStyle}`;
 
-        // Use Gemini's native image generation API (OpenAI compat doesn't support images.generate)
-        const geminiResponse = await axios.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-image-generation:generateContent?key=${process.env.GEMINI_API_KEY}`,
-            {
-                contents: [{ parts: [{ text: fullPrompt }] }],
-                generationConfig: {
-                    responseModalities: ['TEXT', 'IMAGE'],
-                },
-            },
-            { headers: { 'Content-Type': 'application/json' } }
-        );
-
-        // Extract the base64 image from the response
-        const parts = geminiResponse.data?.candidates?.[0]?.content?.parts || [];
-        const imagePart = parts.find(p => p.inlineData);
-
-        if (!imagePart) {
-            return res.status(500).json({ error: 'Image generation failed — no image in response' });
-        }
-
-        const base64Image = imagePart.inlineData.data;
-        const mimeType = imagePart.inlineData.mimeType || 'image/png';
-
-        // Upload the base64 image to Cloudinary
-        const uploadResult = await new Promise((resolve, reject) => {
-            const stream = cloudinary.uploader.upload_stream(
-                { folder: 'speedai/images' },
-                (error, result) => {
-                    if (error) reject(error);
-                    else resolve(result);
-                }
-            );
-            stream.end(Buffer.from(base64Image, 'base64'));
-        });
-
-        const imageUrl = uploadResult.secure_url;
+        // Gemini Free Tier does not allow image generation (limit: 0).
+        // Using Pollinations AI as a free fallback which doesn't require an API key.
+        // We use the direct Pollinations URL to avoid Cloudinary 403 upload quota limits.
+        const encodedPrompt = encodeURIComponent(fullPrompt);
+        const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}`;
 
         const [generation] = await sql`
             INSERT INTO generations (user_id, tool, prompt, output_url)
@@ -403,20 +408,22 @@ app.post(
 
             const resumeText = req.file.buffer.toString('utf-8');
 
-            const completion = await openai.chat.completions.create({
-                model: 'gemini-2.0-flash',
-                messages: [
-                    {
-                        role: 'system',
-                        content:
-                            'You are an expert career coach and resume reviewer.',
-                    },
-                    {
-                        role: 'user',
-                        content: `Review this resume and provide structured feedback with sections: Summary, Strengths, Weaknesses, Improvements.\n\n${resumeText}`,
-                    },
-                ],
-            });
+            const completion = await retryWithBackoff(() =>
+                openai.chat.completions.create({
+                    model: 'gemini-2.5-flash',
+                    messages: [
+                        {
+                            role: 'system',
+                            content:
+                                'You are an expert career coach and resume reviewer.',
+                        },
+                        {
+                            role: 'user',
+                            content: `Review this resume and provide structured feedback with sections: Summary, Strengths, Weaknesses, Improvements.\n\n${resumeText}`,
+                        },
+                    ],
+                })
+            );
 
             const review = completion.choices[0].message.content;
 
@@ -528,20 +535,22 @@ app.post('/api/ai/summarise', requireAuth, async (req, res, next) => {
 
         await checkAndDeductCredit(req.dbUser, 'summarise');
 
-        const completion = await openai.chat.completions.create({
-            model: 'gemini-2.0-flash',
-            messages: [
-                {
-                    role: 'system',
-                    content:
-                        'You are an expert at summarising content clearly and concisely.',
-                },
-                {
-                    role: 'user',
-                    content: `Summarise the following text in 5 bullet points:\n\n${text}`,
-                },
-            ],
-        });
+        const completion = await retryWithBackoff(() =>
+            openai.chat.completions.create({
+                model: 'gemini-2.5-flash',
+                messages: [
+                    {
+                        role: 'system',
+                        content:
+                            'You are an expert at summarising content clearly and concisely.',
+                    },
+                    {
+                        role: 'user',
+                        content: `Summarise the following text in 5 bullet points:\n\n${text}`,
+                    },
+                ],
+            })
+        );
 
         const summary = completion.choices[0].message.content;
 
@@ -741,6 +750,14 @@ app.delete('/api/community/:id', requireAuth, async (req, res, next) => {
 
 app.use((err, req, res, next) => {
     console.error('❌ Unhandled error:', err);
+
+    // Detect Gemini/OpenAI rate-limit errors
+    if (err.status === 429 || err.constructor?.name === 'RateLimitError') {
+        return res.status(429).json({
+            error: 'AI service rate limit reached. Please wait a minute and try again.',
+        });
+    }
+
     const status = err.status || 500;
     res.status(status).json({ error: err.message || 'Internal server error' });
 });
@@ -751,6 +768,11 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 4000;
 
+console.log('⏳ Starting database initialization...');
 initDB().then(() => {
+    console.log('✅ DB init complete, starting HTTP server...');
     app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server running on port ${PORT}`));
+}).catch(err => {
+    console.error('❌ Server failed to start:', err);
+    process.exit(1);
 });

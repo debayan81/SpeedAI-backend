@@ -35,9 +35,22 @@ export async function apiCall(endpoint, { method = 'GET', body, formData } = {},
         fetchOptions.body = JSON.stringify(body);
     }
 
-    const res = await fetch(`${BACKEND_URL}${endpoint}`, fetchOptions);
+    const url = `${BACKEND_URL}${endpoint}`;
+    let res;
+    try {
+        res = await fetch(url, fetchOptions);
+    } catch (networkErr) {
+        // Network-level failure (backend down, CORS blocked, DNS fail)
+        throw new Error(`Network error reaching ${url} — is the backend running? (${networkErr.message})`);
+    }
 
-    const data = await res.json();
+    let data;
+    try {
+        data = await res.json();
+    } catch {
+        // Response wasn't JSON (e.g. HTML error page, 502 gateway)
+        throw new Error(`Backend returned non-JSON (status ${res.status}) from ${endpoint}`);
+    }
 
     if (!res.ok) {
         const error = new Error(data.error || 'Something went wrong');
