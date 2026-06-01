@@ -12,8 +12,10 @@ import { v2 as cloudinary } from 'cloudinary';
 import multer from 'multer';
 import axios from 'axios';
 import { Webhook } from 'svix';
-import pdfParse from 'pdf-parse';
-import mammoth from 'mammoth';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const pdfParse = require('pdf-parse');
+const mammoth = require('mammoth');
 
 // ============================================================
 // 1. App Setup
