@@ -12,6 +12,8 @@ import { v2 as cloudinary } from 'cloudinary';
 import multer from 'multer';
 import axios from 'axios';
 import { Webhook } from 'svix';
+import pdfParse from 'pdf-parse';
+import mammoth from 'mammoth';
 
 // ============================================================
 // 1. App Setup
@@ -456,7 +458,28 @@ app.post(
 
             await checkAndDeductCredit(req.dbUser, 'resume');
 
-            const resumeText = req.file.buffer.toString('utf-8');
+            let resumeText = '';
+            const fileName = req.file.originalname.toLowerCase();
+
+            try {
+                if (fileName.endsWith('.pdf')) {
+                    const data = await pdfParse(req.file.buffer);
+                    resumeText = data.text;
+                } else if (fileName.endsWith('.docx')) {
+                    const result = await mammoth.extractRawText({ buffer: req.file.buffer });
+                    resumeText = result.value;
+                } else {
+                    // Fallback for .txt or other formats
+                    resumeText = req.file.buffer.toString('utf-8');
+                }
+            } catch (parseError) {
+                console.error('Failed to parse resume file:', parseError);
+                return res.status(400).json({ error: 'Could not extract text from the provided file. Please ensure it is a valid PDF, DOCX, or TXT file.' });
+            }
+
+            if (!resumeText.trim()) {
+                return res.status(400).json({ error: 'The uploaded file appears to be empty or unreadable.' });
+            }
 
             const completion = await retryWithBackoff(() =>
                 openai.chat.completions.create({
@@ -469,7 +492,7 @@ app.post(
                         },
                         {
                             role: 'user',
-                            content: `Review this resume and provide structured feedback with sections: Summary, Strengths, Weaknesses, Improvements.\n\n${resumeText}`,
+                            content: `Review this resume and provide structured feedback with sections: Summary, Strengths, Weaknesses, Improvements.\n\n${resumeText.substring(0, 30000)}`,
                         },
                     ],
                 })
