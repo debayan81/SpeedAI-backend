@@ -180,15 +180,31 @@ async function requireAuth(req, res, next) {
             return res.status(401).json({ error: 'Unauthorized. Please sign in.' });
         }
 
-        const [dbUser] = await sql`
+        let [dbUser] = await sql`
             SELECT id, clerk_id, email, name, credits, plan, created_at
             FROM users
             WHERE clerk_id = ${userId}
         `;
 
         if (!dbUser) {
-            console.log(`⚠️ requireAuth: Clerk userId ${userId} not found in DB`);
-            return res.status(404).json({ error: 'User not found in database.' });
+            // Auto-create user from Clerk data if not in DB yet
+            console.log(`⚠️ requireAuth: Clerk userId ${userId} not found in DB, auto-creating...`);
+            try {
+                const clerkUser = await clerkClient.users.getUser(userId);
+                const email = clerkUser.emailAddresses?.[0]?.emailAddress || '';
+                const name = [clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(' ') || 'User';
+                
+                [dbUser] = await sql`
+                    INSERT INTO users (clerk_id, email, name, credits, plan)
+                    VALUES (${userId}, ${email}, ${name}, 10, 'free')
+                    ON CONFLICT (clerk_id) DO UPDATE SET email = EXCLUDED.email
+                    RETURNING id, clerk_id, email, name, credits, plan, created_at
+                `;
+                console.log(`✅ Auto-created user: ${email} with 10 credits`);
+            } catch (createErr) {
+                console.error('❌ Failed to auto-create user:', createErr.message);
+                return res.status(404).json({ error: 'User not found in database.' });
+            }
         }
 
         req.dbUser = dbUser;
